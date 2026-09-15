@@ -27,19 +27,26 @@ pi -e git:github.com/bsamek/pi-customizations
 
 ## Development
 
-Work on the extensions in this repo, not in `~/.pi/agent/extensions`. Pi loads
-them from here via the package entry in settings, so this directory is the
-single source of truth.
+Pi installs this repo as a **git package**, so it runs from its own clone at
+`~/.pi/agent/git/github.com/bsamek/pi-customizations` — not from your working
+copy. Edits to `~/src/pi-customizations` have no effect until they are pushed.
 
 ```bash
-pi list          # confirm the package is installed
-pi update --extensions   # reinstall after changing source
+# edit, then
+cd ~/src/pi-customizations
+git commit -am "..." && git push
+pi update --extensions        # pull the new commit into the runtime clone
+pi list                       # confirm the package is installed
 ```
 
-For an iterating loop, install the local checkout instead:
+To iterate without pushing, temporarily install your working copy instead.
+Remove the git package first — keeping both would register the `subagent` tool
+twice and fail to load:
 
 ```bash
+pi remove git:github.com/bsamek/pi-customizations@main
 pi install ~/src/pi-customizations
+# ...iterate... then switch back
 ```
 
 ## Notes
