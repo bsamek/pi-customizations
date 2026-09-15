@@ -1,0 +1,17 @@
+{
+  "name": "pi-customizations",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal pi extension collection",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
