@@ -453,13 +453,14 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 		description: [
 			"Dispatch read-only subagents pinned to explicit models, each in an isolated context window.",
-			"Use this to get a second opinion from a different model family, or to fan one task out across several models.",
+			"Only use this when the user asks for it: to consult a specific model, get a second opinion from a different model family, or fan one task out across several models.",
 			"Modes (provide exactly one): single {model, task}; fanout {models, task}; parallel {tasks: [{model, task}]}.",
 			"Subagents are read-only: they can read, search, and run read-only bash, but cannot modify the repo.",
 		].join(" "),
 		promptSnippet: "Dispatch a read-only subagent to a specific model for review, planning, or ideation",
 		promptGuidelines: [
-			"Use subagent when the user asks to dispatch a subagent or to consult a specific model, or when a second opinion from a different model family is useful.",
+			"Use subagent only when the user explicitly asks to dispatch a subagent, consult a specific model, or get a second opinion from a different model family. Never invoke it on your own judgment.",
+			"If you think a subagent would help but the user has not asked, suggest it and wait for the user to request it.",
 			"subagent models must be chosen from the available models listed in the system prompt; it cannot dispatch to models the session has not enabled.",
 		],
 		parameters: SubagentParams,
@@ -759,7 +760,7 @@ export default function (pi: ExtensionAPI) {
 
 ## Subagent Models
 
-The \`subagent\` tool dispatches read-only subagents pinned to a specific model. Use it for cross-model reviews and second opinions. Available models:
+The \`subagent\` tool dispatches read-only subagents pinned to a specific model. Use it only when the user asks for a cross-model review or second opinion; otherwise suggest one and wait for the user to request it. Available models:
 ${lines.join("\n")}
 `,
 		};
