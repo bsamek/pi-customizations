@@ -7,10 +7,15 @@
  * Behavior:
  * - On session start: base title (`π - name - cwd`), then generate a summary
  *   immediately if the session already has conversation (e.g. resume).
- * - After each settled agent run: generate once for the first turn, then
- *   refresh after every REFRESH_EVERY_USER_TURNS user messages.
+ * - On `before_agent_start`: generate concurrently with the agent run, so the
+ *   title is usually ready by the time the first response settles. Generates
+ *   once for the first turn, then refreshes after every
+ *   REFRESH_EVERY_USER_TURNS user messages.
  * - On `session_info_changed` (pi resets the title when the session name
  *   changes): re-apply the summarized title.
+ *
+ * The summary is also published on the `session-title:summary` event-bus
+ * channel so other extensions (e.g. notify) can use it.
  *
  * The summary uses `fireworks/accounts/fireworks/models/deepseek-v4p1-flash`
  * with thinking disabled (cheap, fast). Failures are silent and keep the
@@ -32,8 +37,8 @@ const MODEL_ID = "accounts/fireworks/models/deepseek-v4p1-flash";
 
 /** Refresh the title after this many user messages since the last summary. */
 const REFRESH_EVERY_USER_TURNS = 4;
-/** Delay after the agent settles before summarizing, to coalesce bursts. */
-const SETTLE_DEBOUNCE_MS = 500;
+/** Event-bus channel carrying the latest summary (or `undefined` on reset). */
+const SUMMARY_CHANNEL = "session-title:summary";
 const MAX_TITLE_CHARS = 60;
 const MAX_DIGEST_CHARS = 4000;
 const MAX_PART_CHARS = 500;
@@ -71,8 +76,13 @@ function truncate(text: string, limit: number): string {
 	return oneLine.length > limit ? `${oneLine.slice(0, limit - 1)}…` : oneLine;
 }
 
-/** Compact digest: the first user message plus the most recent exchanges. */
-function buildDigest(entries: readonly unknown[]): { digest: string; userTurns: number } {
+/**
+ * Compact digest: the first user message plus the most recent exchanges.
+ *
+ * `pendingPrompt` is the just-submitted prompt. It is not in the session
+ * branch yet when generated from `before_agent_start`, so fold it in here.
+ */
+function buildDigest(entries: readonly unknown[], pendingPrompt?: string): { digest: string; userTurns: number } {
 	const userLines: string[] = [];
 	const tail: string[] = [];
 
@@ -85,6 +95,12 @@ function buildDigest(entries: readonly unknown[]): { digest: string; userTurns: 
 		if (!text) continue;
 		const line = `${role === "user" ? "User" : "Assistant"}: ${truncate(text, MAX_PART_CHARS)}`;
 		if (role === "user") userLines.push(line);
+		tail.push(line);
+	}
+
+	if (pendingPrompt) {
+		const line = `User: ${truncate(pendingPrompt, MAX_PART_CHARS)}`;
+		userLines.push(line);
 		tail.push(line);
 	}
 
@@ -125,7 +141,6 @@ export default function (pi: ExtensionAPI) {
 	let summary: string | undefined;
 	let summarizedUserTurns = -1;
 	let inFlight = false;
-	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let generation = 0;
 	let warnedModelProblem = false;
 
@@ -141,14 +156,11 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setTitle(summary ? `π - ${summary}` : baseTitle(ctx));
 	};
 
-	const cancelDebounce = () => {
-		if (debounceTimer) {
-			clearTimeout(debounceTimer);
-			debounceTimer = null;
-		}
+	const publishSummary = (title: string | undefined) => {
+		pi.events.emit(SUMMARY_CHANNEL, { summary: title });
 	};
 
-	async function generateTitle(ctx: ExtensionContext, force: boolean) {
+	async function generateTitle(ctx: ExtensionContext, force: boolean, pendingPrompt?: string) {
 		if (!isInteractive(ctx) || inFlight) return;
 
 		const model = ctx.modelRegistry.find(MODEL_PROVIDER, MODEL_ID);
@@ -160,7 +172,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const { digest, userTurns } = buildDigest(ctx.sessionManager.getBranch());
+		const { digest, userTurns } = buildDigest(ctx.sessionManager.getBranch(), pendingPrompt);
 		if (!digest) return;
 		if (!force && summarizedUserTurns >= 0 && userTurns < summarizedUserTurns + REFRESH_EVERY_USER_TURNS) {
 			return;
@@ -195,6 +207,7 @@ export default function (pi: ExtensionAPI) {
 				summary = title;
 				summarizedUserTurns = userTurns;
 				applyTitle(ctx);
+				publishSummary(title);
 			}
 		} catch {
 			// Keep the previous title; transient model/network errors are expected.
@@ -208,21 +221,18 @@ export default function (pi: ExtensionAPI) {
 		summary = undefined;
 		summarizedUserTurns = -1;
 		warnedModelProblem = false;
-		cancelDebounce();
 		applyTitle(ctx);
+		publishSummary(undefined);
 		// On resume/reload the branch may already have content; summarize now.
 		void generateTitle(ctx, true);
 	});
 
-	pi.on("agent_settled", async (_event, ctx) => {
+	// Start summarizing as soon as the prompt lands, so the model call runs
+	// concurrently with the agent and the title is ready when the run settles.
+	pi.on("before_agent_start", async (event, ctx) => {
 		if (!isInteractive(ctx)) return;
-		const gen = generation;
-		cancelDebounce();
-		debounceTimer = setTimeout(() => {
-			debounceTimer = null;
-			if (gen !== generation || !ctx.isIdle()) return;
-			void generateTitle(ctx, false);
-		}, SETTLE_DEBOUNCE_MS);
+		// Deliberately not awaited: the agent must not wait on the summarizer.
+		void generateTitle(ctx, summary === undefined, event.prompt);
 	});
 
 	// Pi resets the terminal title when the session name changes; re-apply ours.
@@ -232,7 +242,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (_event, ctx) => {
 		generation++;
-		cancelDebounce();
 		ctx.ui.setTitle(baseTitle(ctx));
 	});
 
@@ -243,6 +252,7 @@ export default function (pi: ExtensionAPI) {
 			if (text) {
 				summary = normalizeTitle(text) ?? text;
 				applyTitle(ctx);
+				publishSummary(summary);
 				ctx.ui.notify(`Terminal title: π - ${summary}`, "info");
 				return;
 			}
