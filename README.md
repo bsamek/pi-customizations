@@ -22,6 +22,7 @@ pi -e git:github.com/bsamek/pi-customizations
 |-----------|-------------|
 | `extensions/notify.ts` | Desktop notification when pi settles and waits for input. Supports OSC 777, Kitty OSC 99, and Windows toast. |
 | `extensions/session-title.ts` | Keeps the terminal title synced to an AI-generated one-line session summary. Adds a `/session-title` command. |
+| `extensions/session-recap.ts` | Shows a one-line recap above the editor after a few idle minutes, so you can pick up where you left off. Adds a `/recap` command and a `--no-session-recap` flag. |
 | `extensions/edit-failure-tracker.ts` | Records failed `edit`/`write` tool calls to `~/.pi/agent/edit-failures.jsonl` and surfaces them in the TUI. |
 | `extensions/subagent/` | `subagent` tool: dispatches read-only pi subprocesses pinned to explicit models (single, fanout, parallel). |
 
