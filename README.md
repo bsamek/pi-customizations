@@ -3,6 +3,17 @@
 Personal [pi](https://pi.dev) extensions, packaged so they can be versioned,
 backed up, and installed on any machine.
 
+## Contents
+
+| Extension | Description |
+|-----------|-------------|
+| `extensions/edit-failure-tracker.ts` | Keeps a log of failed edits and writes, so repeatedly failing attempts are easy to spot and review. Run `/edit-failures` to see a report, or `/edit-failures clear` to reset it. |
+| `extensions/git-safety.ts` | Blocks force-pushes and non-draft `gh pr create` commands. |
+| `extensions/notify.ts` | Sends a desktop notification when pi finishes and starts waiting for you, so you can work in another window. |
+| `extensions/session-recap.ts` | Shows a one-line recap of where you left off when you come back to the terminal after stepping away. Add or remove it per session with `/recap on` and `/recap off`, or start with it disabled via `--no-session-recap`. |
+| `extensions/session-title.ts` | Keeps your terminal title set to a one-line summary of what the session is about. Refine it any time with `/session-title`, or set it yourself with `/session-title <text>`. |
+| `extensions/subagent/` | Adds a `subagent` tool that hands a task to another model — for a second opinion, a review, or several models at once. Subagents are read-only and never edit your files. |
+
 ## Install
 
 ```bash
@@ -16,16 +27,29 @@ resources on startup. To preview without installing:
 pi -e git:github.com/bsamek/pi-customizations
 ```
 
-## Contents
+### Installing only some extensions
 
-| Extension | Description |
-|-----------|-------------|
-| `extensions/notify.ts` | Desktop notification when pi settles and waits for input. Supports OSC 777, Kitty OSC 99, and Windows toast. |
-| `extensions/session-title.ts` | Keeps the terminal title synced to an AI-generated one-line session summary. Adds a `/session-title` command. |
-| `extensions/session-recap.ts` | Shows a one-line recap above the editor after a few idle minutes, so you can pick up where you left off. Adds a `/recap` command and a `--no-session-recap` flag. |
-| `extensions/edit-failure-tracker.ts` | Records failed `edit`/`write` tool calls to `~/.pi/agent/edit-failures.jsonl` and surfaces them in the TUI. |
-| `extensions/git-safety.ts` | Blocks non-draft `gh pr create` commands and force-pushing commands. |
-| `extensions/subagent/` | `subagent` tool: dispatches read-only pi subprocesses pinned to explicit models (single, fanout, parallel). |
+Nothing obliges you to take the whole set. After installing the package, run
+`pi config` and toggle off the extensions you don't want (press Tab to switch
+between global and project settings).
+
+To pick extensions declaratively instead, replace the plain package entry in
+`~/.pi/agent/settings.json` with the object form and list exactly what to load:
+
+```json
+{
+  "packages": [
+    {
+      "source": "git:github.com/bsamek/pi-customizations@main",
+      "extensions": ["extensions/notify.ts", "extensions/session-title.ts"]
+    }
+  ]
+}
+```
+
+The listed paths are relative to the package root, and they can be globs, for
+example `["extensions/*.ts", "!extensions/session-recap.ts"]`. A package that
+appears only in its object form is fetched and updated the same way as before.
 
 ## Development
 
@@ -50,10 +74,3 @@ pi remove git:github.com/bsamek/pi-customizations@main
 pi install ~/src/pi-customizations
 # ...iterate... then switch back
 ```
-
-## Notes
-
-- Uses `@earendil-works/pi-coding-agent` and friends as peer dependencies; pi
-  bundles these, so they are not vendored here.
-- No secrets belong in this repo. Credentials live in `~/.pi/agent/auth.json`,
-  which is intentionally never committed.
