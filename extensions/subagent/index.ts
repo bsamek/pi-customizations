@@ -493,6 +493,17 @@ export default function (pi: ExtensionAPI) {
 		let preferredModel = "github-copilot/gpt-6-luna";
 		const preferencePath = path.join(getAgentDir(), `${role}.json`);
 
+	const savePreference = (model: string, enabled: boolean) => {
+		fs.mkdirSync(path.dirname(preferencePath), { recursive: true });
+		const temporary = `${preferencePath}.${process.pid}.tmp`;
+		try {
+			fs.writeFileSync(temporary, `${JSON.stringify({ model, enabled }, null, 2)}\n`, { mode: 0o600 });
+			fs.renameSync(temporary, preferencePath);
+		} finally {
+			fs.rmSync(temporary, { force: true });
+		}
+	};
+
 	const disableRole = () => {
 		selectedModel = undefined;
 		pi.setActiveTools(pi.getActiveTools().filter((name) => name !== toolName));
@@ -501,14 +512,26 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		disableRole();
 		preferredModel = "github-copilot/gpt-6-luna";
+		let enabled = false;
 		try {
 			const saved = JSON.parse(fs.readFileSync(preferencePath, "utf8"));
 			if (typeof saved.model !== "string" || !saved.model.trim()) throw new Error("Invalid model preference");
+			if (saved.enabled !== undefined && typeof saved.enabled !== "boolean") throw new Error("Invalid enabled preference");
 			preferredModel = saved.model;
+			enabled = saved.enabled === true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") ctx.ui.notify(`Could not read ${role} preference; using Luna: ${error}`, "warning");
 		}
-		ctx.ui.setStatus(role, undefined);
+		if (enabled) {
+			const matches = matchModels(preferredModel, availableModels(ctx as any));
+			if (matches.length === 1) {
+				selectedModel = matches[0];
+				pi.setActiveTools([...new Set([...pi.getActiveTools(), toolName])]);
+			} else {
+				ctx.ui.notify(`Saved ${role} model is unavailable: ${preferredModel}. Delegation is off in this session; choose a model with /${role} model.`, "warning");
+			}
+		}
+		ctx.ui.setStatus(role, selectedModel ? `${role}: ${selectedModel.name}` : undefined);
 	});
 
 	pi.registerCommand(role, {
@@ -524,6 +547,12 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			if (query === "off") {
+				try {
+					savePreference(preferredModel, false);
+				} catch (error) {
+					ctx.ui.notify(`Could not save ${role} status; mode unchanged: ${error}`, "warning");
+					return;
+				}
 				disableRole();
 				ctx.ui.setStatus(role, undefined);
 				ctx.ui.notify(`${label} delegation off. Main model handles this work directly.`, "info");
@@ -551,14 +580,7 @@ export default function (pi: ExtensionAPI) {
 			const selected = matches[0];
 			const canonical = `${selected.provider}/${selected.id}`;
 			try {
-				fs.mkdirSync(path.dirname(preferencePath), { recursive: true });
-				const temporary = `${preferencePath}.${process.pid}.tmp`;
-				try {
-					fs.writeFileSync(temporary, `${JSON.stringify({ model: canonical }, null, 2)}\n`, { mode: 0o600 });
-					fs.renameSync(temporary, preferencePath);
-				} finally {
-					fs.rmSync(temporary, { force: true });
-				}
+				savePreference(canonical, selectingModel ? Boolean(selectedModel) : true);
 			} catch (error) {
 				ctx.ui.notify(`Could not save ${role} model; selection unchanged: ${error}`, "warning");
 				return;

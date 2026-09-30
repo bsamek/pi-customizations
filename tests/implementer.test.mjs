@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { test, after } from 'node:test';
+import { test, after, afterEach } from 'node:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -31,6 +31,9 @@ if (process.argv.includes('--mode')) {
   const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-implementer-test-'));
   process.env.PI_CODING_AGENT_DIR = agentDir;
   after(() => fs.rmSync(agentDir, { recursive: true, force: true }));
+  afterEach(() => {
+    for (const role of ['implementer', 'explorer']) fs.rmSync(path.join(agentDir, `${role}.json`), { force: true });
+  });
   // Resolve dependencies from the installed Pi rather than requiring a local install.
   const require = createRequire(process.env.PI_TEST_PACKAGE || '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/package.json');
   const { createJiti } = require('jiti');
@@ -54,7 +57,7 @@ if (process.argv.includes('--mode')) {
     for (const fn of events.get('session_start')) fn({}, ctx);
     return { tools, commands, events, ctx, notices, active: () => active, mode: args => commands.get('implementer').handler(args, ctx) };
   }
-  test('defaults off; selecting and disabling preserves other tools; reset on session start', async () => {
+  test('defaults off; selecting and disabling preserves other tools; restores on session start', async () => {
     const s = setup();
     assert.ok(!s.active().includes('implement'));
     await assert.rejects(s.tools.get('implement').execute('', { task: 'test' }, undefined, undefined, s.ctx), /off/);
@@ -69,7 +72,10 @@ if (process.argv.includes('--mode')) {
     assert.ok(s.active().includes('subagent'));
     await s.mode('gpt-6-luna');
     for (const fn of s.events.get('session_start')) fn({}, s.ctx);
-    assert.ok(!s.active().includes('implement'));
+    assert.ok(s.active().includes('implement'));
+    assert.ok(setup().active().includes('implement'));
+    await s.mode('off');
+    assert.ok(!setup().active().includes('implement'));
   });
   test('write child is pinned, isolated, sequential, and reports output', async () => {
     const s = setup();
@@ -129,7 +135,7 @@ if (process.argv.includes('--mode')) {
     await resumed.mode('on');
     assert.ok(resumed.active().includes('implement'));
   });
-  test('roles support all four independent modes and reset off', async () => {
+  test('roles support all four independent modes and persist independently', async () => {
     const s = setup();
     const explorer = args => s.commands.get('explorer').handler(args, s.ctx);
     assert.ok(!s.active().includes('explore') && !s.active().includes('implement'));
@@ -144,11 +150,20 @@ if (process.argv.includes('--mode')) {
     await explorer('on');
     await s.mode('on');
     for (const fn of s.events.get('session_start')) fn({}, s.ctx);
-    assert.ok(!s.active().includes('explore') && !s.active().includes('implement'));
+    assert.ok(s.active().includes('explore') && s.active().includes('implement'));
     assert.ok(s.active().includes('subagent'));
+    let next = setup();
+    assert.ok(next.active().includes('explore') && next.active().includes('implement'));
+    await explorer('off');
+    next = setup();
+    assert.ok(!next.active().includes('explore') && next.active().includes('implement'));
+    await s.mode('off');
+    next = setup();
+    assert.ok(!next.active().includes('explore') && !next.active().includes('implement'));
   });
   test('explorer model selection is persisted independently', async () => {
     const s = setup();
+    await s.mode('model gpt-6-luna');
     const other = { ...luna, id: 'exploration-model', name: 'Explorer' };
     s.ctx.scopedModels.push({ model: other });
     await s.commands.get('explorer').handler('model exploration-model', s.ctx);
@@ -211,6 +226,34 @@ if (process.argv.includes('--mode')) {
     assert.match(p, /Use your judgment to call implement/);
     assert.match(p, /Use your judgment to call explore/);
     assert.match(p, /only when the user asks for a cross-model review/);
+  });
+  test('legacy model-only preferences remain off; malformed settings fail closed', async () => {
+    fs.writeFileSync(path.join(agentDir, 'implementer.json'), JSON.stringify({ model: 'github-copilot/gpt-6-luna' }));
+    let s = setup();
+    assert.ok(!s.active().includes('implement'));
+    await s.mode('on');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, 'implementer.json'), 'utf8')).enabled, true);
+    fs.writeFileSync(path.join(agentDir, 'implementer.json'), JSON.stringify({ model: 'github-copilot/gpt-6-luna', enabled: 'true' }));
+    s = setup();
+    assert.ok(!s.active().includes('implement'));
+    assert.match(s.notices.at(-1), /Could not read/);
+  });
+  test('unavailable saved model stays off without silently switching or losing preference', async () => {
+    const preference = { model: 'github-copilot/unavailable', enabled: true };
+    fs.writeFileSync(path.join(agentDir, 'explorer.json'), JSON.stringify(preference));
+    const s = setup();
+    assert.ok(!s.active().includes('explore'));
+    assert.match(s.notices.at(-1), /unavailable/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(agentDir, 'explorer.json'), 'utf8')), preference);
+  });
+  test('model selection preserves saved on and off state', async () => {
+    const s = setup();
+    await s.mode('model gpt-6-luna');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, 'implementer.json'), 'utf8')).enabled, false);
+    await s.mode('on');
+    await s.mode('model gpt-6-luna');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(agentDir, 'implementer.json'), 'utf8')).enabled, true);
+    assert.ok(setup().active().includes('implement'));
   });
   test('selected implementer must remain in model scope', async () => {
     const s = setup();

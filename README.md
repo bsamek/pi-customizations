@@ -76,11 +76,17 @@ package is still fetched and updated the same way.
 
 ## Optional implementation and exploration delegation
 
-Model choice and delegation are independent. New, resumed, switched, and reloaded
-sessions start with delegation **off**; selecting a main model does not change it.
-Both roles default to `github-copilot/gpt-6-luna`. Their selected models are remembered
+Model choice and delegation are independent; selecting a main model does not change
+either role. Both roles initially default to **off**, with model
+`github-copilot/gpt-6-luna`. Their on/off settings and selected models are remembered
 independently across sessions in `~/.pi/agent/implementer.json` and
 `~/.pi/agent/explorer.json` (or your configured Pi agent directory).
+
+New, resumed, switched, and reloaded sessions restore those saved settings.
+Changing a setting does not live-update other sessions that are already running;
+reload those sessions to pick it up. Older model-only preference files remain off
+until explicitly enabled. If a saved model is unavailable in the new session,
+that role stays off with a warning rather than silently selecting another model.
 
 ```text
 /model github-copilot/gpt-6.1-sol
