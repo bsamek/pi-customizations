@@ -13,7 +13,7 @@ backed up, and installed on any machine.
 | `extensions/session-recap.ts` | Shows a one-line recap of where you left off when you step away — after a few idle minutes in a session with at least a few turns. `/recap off` and `/recap on` toggle automatic recaps, or start with them disabled via `--no-session-recap`; `/recap` shows one on demand either way. |
 | `extensions/session-transcript.ts` | Exports the active session as a compact Markdown transcript for pasting elsewhere: one section per turn, with the prompt and the assistant's prose, and none of the tool calls, results, thinking, or usage that `/export` carries. `/transcript` writes `pi-transcript-<session-id>.md`, `/transcript <path>` writes elsewhere, and `/transcript --editor` opens it in the editor. Only the active branch is exported, and no model call is made. |
 | `extensions/session-title.ts` | Keeps your terminal title set to a one-line summary of what the session is about. Regenerate the summary with `/session-title`, or set your own with `/session-title <text>`. |
-| `extensions/subagent/` | Adds a `subagent` tool that hands a task to another model — for a second opinion, a review, or several models at once. Subagents get no `edit` or `write` tool and are instructed to stay read-only, but they can still run shell commands, so this is a prompt-level convention rather than a sandbox. |
+| `extensions/subagent/` | Adds read-only model consultations with `subagent`, plus independent opt-in implementation (`/implementer on`) and read-only codebase exploration (`/explorer on`). All use isolated child processes, not a sandbox. |
 
 `session-title` and `session-recap` write their summaries with a specific
 Fireworks model. When that model is unavailable or unauthenticated, they warn
@@ -73,6 +73,87 @@ The listed paths are relative to the package root, and they can be globs:
 Note that `*` does not recurse, so subdirectories like `extensions/subagent/`
 have to be listed by hand. Filtering only changes which resources load; the
 package is still fetched and updated the same way.
+
+## Optional implementation and exploration delegation
+
+Model choice and delegation are independent. New, resumed, switched, and reloaded
+sessions start with delegation **off**; selecting a main model does not change it.
+Both roles default to `github-copilot/gpt-6-luna`. Their selected models are remembered
+independently across sessions in `~/.pi/agent/implementer.json` and
+`~/.pi/agent/explorer.json` (or your configured Pi agent directory).
+
+```text
+/model github-copilot/gpt-6.1-sol
+/implementer on
+```
+
+The main model uses its judgment to delegate suitable coding tasks through
+`implement`, without asking permission for each dispatch; trivial work can be
+done directly. Each child gets a focused task, not the parent conversation, and runs in
+the same workspace with read/search/bash/edit/write tools. The coordinator checks
+the resulting diff and test results. Only one implementer runs at a time; parent
+edit/write/shell calls are blocked while it runs. Other custom mutation tools and
+external sessions are not locked, so avoid concurrent changes to the workspace.
+
+```text
+/implementer status
+/implementer off
+/model github-copilot/gpt-6-luna
+```
+
+This returns to direct implementation. You can select any enabled open-weights
+model with `/model` and work directly, or independently enable delegation.
+Use `/implementer model` to open a model picker, or `/implementer model <model>`
+to select one directly. Changing the implementer preserves the current on/off mode.
+Canonical `provider/model-id`, bare IDs, and unambiguous display names are accepted.
+Unavailable or ambiguous model selections leave the current mode unchanged.
+The older `/implementer <model>` shorthand still selects a model and enables delegation.
+
+### Independent explorer mode
+
+```text
+/explorer on
+/explorer off
+/explorer status
+/explorer model
+/explorer model <provider/model-id>
+```
+
+`/explorer model` opens a picker; an explicit model argument selects directly.
+Model selection preserves the on/off mode, just like the implementer. The
+`/explorer <model>` shorthand selects and enables exploration. Both roles can be
+on, either one can be on, or both can be off; toggling one never toggles the other.
+
+When enabled, the coordinator uses its judgment to call `explore` for focused
+codebase questions without asking permission each time. Trivial lookups can stay
+in the main session. Explorers get read/search/bash tools and read-only instructions,
+not edit/write. Reports include relevant paths, symbols and line references,
+a concise explanation backed by evidence, and uncertainties or next files to inspect.
+
+Up to four explorers can run in parallel. Exploration and implementation never
+run simultaneously, and parent edit/write/shell calls are blocked while either
+role runs. Custom mutation tools and external sessions are not locked. Explorers
+are instructed not to run builds, tests, or other artifact-producing commands.
+Read-only bash is a prompt-level convention, **not a sandbox**. Explorer children
+also disable extensions, skills and templates, and inherit project context files.
+
+The original `subagent` consultation tool stays read-only and still requires an
+explicit request; neither delegation mode authorizes unsolicited reviews.
+Implementation children are instructed not to delegate, commit, push, publish,
+open PRs, perform destructive operations, or act outside the workspace. **These
+are prompt-level restrictions, not a security boundary.** Children have bash and
+run with `--no-extensions`, so parent extension safety hooks are not inherited.
+They also disable skill and template discovery: Superpowers is not required or
+bootstrapped. Project context files such as `AGENTS.md` still apply.
+
+To run the regression tests without model calls:
+
+```bash
+node --test tests/implementer.test.mjs
+```
+
+The tests resolve host dependencies from the standard Homebrew Pi installation.
+For another installation, set `PI_TEST_PACKAGE` to its `package.json` path.
 
 ## Development
 
