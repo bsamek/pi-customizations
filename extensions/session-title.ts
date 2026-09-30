@@ -17,9 +17,8 @@
  * The summary is also published on the `session-title:summary` event-bus
  * channel so other extensions (e.g. notify) can use it.
  *
- * The summary uses `fireworks/accounts/fireworks/models/deepseek-v4p1-flash`
- * with thinking disabled (cheap, fast). Failures are silent and keep the
- * previous title.
+ * The summary uses `github-copilot/gpt-6-luna` with thinking disabled.
+ * Failures are silent and keep the previous title.
  *
  * Usage:
  *   /session-title          regenerate now
@@ -32,8 +31,8 @@
 import path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-const MODEL_PROVIDER = "fireworks";
-const MODEL_ID = "accounts/fireworks/models/deepseek-v4p1-flash";
+const MODEL_PROVIDER = "github-copilot";
+const MODEL_ID = "gpt-6-luna";
 
 /** Refresh the title after this many user messages since the last summary. */
 const REFRESH_EVERY_USER_TURNS = 4;

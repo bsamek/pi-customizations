@@ -18,8 +18,8 @@
  *   /recap on               re-enable them
  *   pi --no-session-recap   start with automatic recaps disabled
  *
- * The recap uses `fireworks/accounts/fireworks/models/deepseek-v4p1-flash` with
- * cheap one-off request options, like `session-title.ts`. Failures are silent.
+ * The recap uses `github-copilot/gpt-6-luna` with cheap one-off request
+ * options, like `session-title.ts`. Failures are silent.
  *
  * Limitation: Claude Code also requires the terminal to be unfocused, but pi
  * does not expose terminal focus/blur to extensions (pi-tui consumes the
@@ -34,8 +34,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
-const MODEL_PROVIDER = "fireworks";
-const MODEL_ID = "accounts/fireworks/models/deepseek-v4p1-flash";
+const MODEL_PROVIDER = "github-copilot";
+const MODEL_ID = "gpt-6-luna";
 
 /** Idle time after a settled run before a recap is generated. */
 const IDLE_TRIGGER_MS = 3 * 60 * 1000;
