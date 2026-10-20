@@ -15,9 +15,9 @@ backed up, and installed on any machine.
 | `extensions/session-title.ts` | Keeps your terminal title set to a one-line summary of what the session is about. Regenerate the summary with `/session-title`, or set your own with `/session-title <text>`. |
 | `extensions/subagent/` | Adds read-only model consultations with `subagent`, plus independent opt-in implementation (`/implementer on`) and read-only codebase exploration (`/explorer on`). All use isolated child processes, not a sandbox. |
 
-`session-title` and `session-recap` write their summaries with a specific
-Fireworks model. When that model is unavailable or unauthenticated, they warn
-once and then stop trying.
+`session-title` and `session-recap` write their summaries with
+`github-copilot/gpt-6-luna`. When that model is unavailable or unauthenticated,
+they warn once and then stop trying.
 
 ## Install
 
