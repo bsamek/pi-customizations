@@ -25,7 +25,8 @@ function blockedReasons(command: string): string[] {
 	return OP_COMMAND.test(command)
 		? [
 				"The 1Password CLI (`op`) is blocked because it can expose vault secrets. " +
-					"Ask the user to retrieve the item themselves, or use a purpose-built tool.",
+					"Ask the user to retrieve the value or unlock 1Password. " +
+					"Do not read vault contents from the agent.",
 			]
 		: [];
 }

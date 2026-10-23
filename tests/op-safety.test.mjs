@@ -28,6 +28,13 @@ test("blocks direct op invocations", async () => {
   }
 });
 
+test("block reason tells the agent what to do instead", async () => {
+  const result = await check("op item get Example");
+  assert.match(result.reason, /Ask the user to retrieve the value or unlock 1Password/);
+  assert.match(result.reason, /Do not read vault contents from the agent/);
+  assert.doesNotMatch(result.reason, /purpose-built/);
+});
+
 test("allows commands that merely contain op inside a word", async () => {
   for (const command of [
     "open README.md",
