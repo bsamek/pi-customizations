@@ -1,63 +1,41 @@
 /**
  * Subagent extension (model-as-parameter variant).
  *
- * Dispatches read-only consultations plus independently enabled implementation
- * and codebase-exploration `pi` subprocesses, pinned to explicit models. The task string is free-form, so the same tool
+ * Dispatches one or more read-only `pi` subprocesses, each pinned to an
+ * explicitly requested model. The task string is free-form, so the same tool
  * covers review, planning, ideation, and anything else. The point of passing a
  * different model is to decorrelate failure modes: a different model family
  * tends to miss different bugs.
  *
- * Modes (exactly one):
- *   - single:   { model, task }
- *   - fanout:   { models: [...], task }        same task, several models
- *   - parallel: { tasks: [{ model, task }] }   several heterogeneous tasks
+ * Every call supplies `tasks: [{ model, task }]`. One task is a single
+ * consultation; several tasks run concurrently. To fan the same task out to
+ * multiple models, repeat the task with different models.
  *
- * Consultations and explorers use read-only tool allowlists and prompt guards;
- * implementers also receive edit/write. Project context files (AGENTS.md) are
- * inherited via cwd. Bash restrictions are not a sandbox.
+ * Every subagent runs with a read-only tool allowlist and a read-only system
+ * prompt guard. Project context files (AGENTS.md) are inherited via cwd.
+ * Bash restrictions are not a sandbox.
  */
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message, Usage } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const READ_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"];
-const IMPLEMENTER_TOOLS = [...READ_ONLY_TOOLS, "edit", "write"];
-const IMPLEMENTER_GUARD = [
-	"You are an implementation subagent. Implement only the supplied task in the current workspace.",
-	"Read relevant files and project instructions first. Preserve unrelated and pre-existing changes.",
-	"Do not delegate or spawn other agents. Do not commit, push, open PRs, publish, or perform destructive operations.",
-	"If the task requires such actions, security-sensitive changes, or side effects outside this workspace, stop and report the blocker.",
-	"Run appropriate tests when safe. Report changed files, tests actually run and their results, and unresolved issues.",
-	"Do not claim success without checking your work. You have no parent conversation: ask for missing context in your report.",
-].join(" ");
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
-const COLLAPSED_ITEM_COUNT = 10;
-
-const EXPLORER_GUARD = [
-	"You are a read-only subagent exploring a codebase. Do not modify files or git state.",
-	"Use bash only for read-only inspection. Do not run builds, tests, formatters, or other commands that write artifacts.",
-	"Do not delegate or spawn other agents. Answer only the focused exploration question supplied.",
-	"Return relevant file paths, symbols and line references; explain the flow concisely, cite evidence, and identify uncertainties and useful next files.",
-	"You do not inherit the parent conversation. Report missing context rather than guessing.",
-].join(" ");
 
 const READ_ONLY_GUARD = [
 	"You are a read-only subagent. Do not modify the repository.",
 	"You may use bash only for read-only commands such as git diff, git log, git show, ls, cat, rg, and find.",
 	"Do not run builds, formatters, or tests that write artifacts, and do not change git state or the environment.",
 ].join(" ");
-
-type Mode = "single" | "fanout" | "parallel";
 
 interface ModelOption {
 	provider: string;
@@ -89,7 +67,6 @@ interface SubResult {
 }
 
 interface SubagentDetails {
-	mode: Mode;
 	results: SubResult[];
 }
 
@@ -308,13 +285,6 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 	return results;
 }
 
-function writePromptToTempFile(prompt: string): { dir: string; filePath: string } {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
-	const filePath = path.join(dir, "system.md");
-	fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-	return { dir, filePath };
-}
-
 interface RunOptions {
 	cwd: string;
 	model: ModelOption;
@@ -322,8 +292,6 @@ interface RunOptions {
 	thinkingLevel?: ThinkingLevel;
 	signal?: AbortSignal;
 	onUpdate?: () => void;
-	implementation?: boolean;
-	exploration?: boolean;
 }
 
 async function runOne(options: RunOptions, result: SubResult): Promise<SubResult> {
@@ -334,117 +302,98 @@ async function runOne(options: RunOptions, result: SubResult): Promise<SubResult
 	// `--thinking` is only meaningful on reasoning models. Unsupported levels
 	// are clamped by the child, but skip it entirely for non-reasoning models.
 	if (thinkingLevel && model.reasoning) args.push("--thinking", thinkingLevel);
-	args.push("--tools", (options.implementation ? IMPLEMENTER_TOOLS : READ_ONLY_TOOLS).join(","));
-	if (options.implementation || options.exploration) args.push("--no-skills", "--no-prompt-templates");
+	args.push("--tools", READ_ONLY_TOOLS.join(","));
+	args.push("--append-system-prompt", READ_ONLY_GUARD);
+	args.push(`Task: ${task}`);
 
-	let promptFile: { dir: string; filePath: string } | null = null;
-	try {
-		promptFile = writePromptToTempFile(options.implementation ? IMPLEMENTER_GUARD : options.exploration ? EXPLORER_GUARD : READ_ONLY_GUARD);
-		args.push("--append-system-prompt", promptFile.filePath);
-		args.push(`Task: ${task}`);
+	let wasAborted = false;
+	const exitCode = await new Promise<number>((resolve) => {
+		const invocation = getPiInvocation(args);
+		const proc = spawn(invocation.command, invocation.args, {
+			cwd,
+			shell: false,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let buffer = "";
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		const killProc = () => {
+			wasAborted = true;
+			proc.kill("SIGTERM");
+			killTimer = setTimeout(() => proc.kill("SIGKILL"), 5000);
+		};
+		const cleanup = () => {
+			signal?.removeEventListener("abort", killProc);
+			if (killTimer) clearTimeout(killTimer);
+		};
 
-		let wasAborted = false;
-		const exitCode = await new Promise<number>((resolve) => {
-			const invocation = getPiInvocation(args);
-			const proc = spawn(invocation.command, invocation.args, {
-				cwd,
-				shell: false,
-				stdio: ["ignore", "pipe", "pipe"],
-			});
-			let buffer = "";
-			let killTimer: ReturnType<typeof setTimeout> | undefined;
-			const killProc = () => {
-				wasAborted = true;
-				proc.kill("SIGTERM");
-				killTimer = setTimeout(() => proc.kill("SIGKILL"), 5000);
-			};
-			const cleanup = () => {
-				signal?.removeEventListener("abort", killProc);
-				if (killTimer) clearTimeout(killTimer);
-			};
-
-			const processLine = (line: string) => {
-				if (!line.trim()) return;
-				let event: any;
-				try {
-					event = JSON.parse(line);
-				} catch {
-					return;
-				}
-
-				if (event.type === "message_end" && event.message) {
-					const msg = event.message as Message;
-					result.messages.push(msg);
-
-					if (msg.role === "assistant") {
-						result.usage.turns++;
-						const usage = msg.usage;
-						if (usage) {
-							result.usage.input += usage.input || 0;
-							result.usage.output += usage.output || 0;
-							result.usage.cacheRead += usage.cacheRead || 0;
-							result.usage.cacheWrite += usage.cacheWrite || 0;
-							result.usage.cost += usage.cost?.total || 0;
-							result.usage.contextTokens = usage.totalTokens || 0;
-						}
-						if (msg.stopReason) result.stopReason = msg.stopReason;
-						if (msg.errorMessage) result.errorMessage = msg.errorMessage;
-					}
-					onUpdate?.();
-				}
-
-				if (event.type === "tool_result_end" && event.message) {
-					result.messages.push(event.message as Message);
-					onUpdate?.();
-				}
-			};
-
-			proc.stdout.on("data", (data) => {
-				buffer += data.toString();
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-				for (const line of lines) processLine(line);
-			});
-
-			proc.stderr.on("data", (data) => {
-				result.stderr += data.toString();
-			});
-
-			proc.on("close", (code) => {
-				cleanup();
-				if (buffer.trim()) processLine(buffer);
-				resolve(code ?? 1);
-			});
-
-			proc.on("error", (err) => {
-				cleanup();
-				result.stderr += `\n${err.message}`;
-				resolve(1);
-			});
-
-			if (signal) {
-				if (signal.aborted) killProc();
-				else signal.addEventListener("abort", killProc, { once: true });
+		const processLine = (line: string) => {
+			if (!line.trim()) return;
+			let event: any;
+			try {
+				event = JSON.parse(line);
+			} catch {
+				return;
 			}
+
+			if (event.type === "message_end" && event.message) {
+				const msg = event.message as Message;
+				result.messages.push(msg);
+
+				if (msg.role === "assistant") {
+					result.usage.turns++;
+					const usage = msg.usage;
+					if (usage) {
+						result.usage.input += usage.input || 0;
+						result.usage.output += usage.output || 0;
+						result.usage.cacheRead += usage.cacheRead || 0;
+						result.usage.cacheWrite += usage.cacheWrite || 0;
+						result.usage.cost += usage.cost?.total || 0;
+						result.usage.contextTokens = usage.totalTokens || 0;
+					}
+					if (msg.stopReason) result.stopReason = msg.stopReason;
+					if (msg.errorMessage) result.errorMessage = msg.errorMessage;
+				}
+				onUpdate?.();
+			}
+
+			if (event.type === "tool_result_end" && event.message) {
+				result.messages.push(event.message as Message);
+				onUpdate?.();
+			}
+		};
+
+		proc.stdout.on("data", (data) => {
+			buffer += data.toString();
+			const lines = buffer.split("\n");
+			buffer = lines.pop() || "";
+			for (const line of lines) processLine(line);
 		});
 
-		result.exitCode = exitCode;
-		if (wasAborted) throw new Error("Subagent was aborted");
-		return result;
-	} finally {
-		if (promptFile) {
-			try {
-				fs.unlinkSync(promptFile.filePath);
-			} catch {
-				/* ignore */
-			}
-			try {
-				fs.rmdirSync(promptFile.dir);
-			} catch {
-				/* ignore */
-			}
+		proc.stderr.on("data", (data) => {
+			result.stderr += data.toString();
+		});
+
+		proc.on("close", (code) => {
+			cleanup();
+			if (buffer.trim()) processLine(buffer);
+			resolve(code ?? 1);
+		});
+
+		proc.on("error", (err) => {
+			cleanup();
+			result.stderr += `\n${err.message}`;
+			resolve(1);
+		});
+
+		if (signal) {
+			if (signal.aborted) killProc();
+			else signal.addEventListener("abort", killProc, { once: true });
 		}
-	}
+	});
+
+	result.exitCode = exitCode;
+	if (wasAborted) throw new Error("Subagent was aborted");
+	return result;
 }
 
 // --- Tool parameter schema -------------------------------------------------
@@ -460,204 +409,20 @@ const TaskItem = Type.Object({
 });
 
 const SubagentParams = Type.Object({
-	model: Type.Optional(Type.String({ description: "Model for single mode." })),
-	task: Type.Optional(Type.String({ description: "Task for single or fanout mode." })),
-	models: Type.Optional(
-		Type.Array(Type.String(), {
-			description: "Models to fan the same task out to, e.g. ['GLM 5.3 Flash', 'GPT-6 Astra'].",
-		}),
-	),
-	tasks: Type.Optional(
-		Type.Array(TaskItem, { description: "Heterogeneous parallel tasks, each with its own model and task." }),
-	),
+	tasks: Type.Array(TaskItem, {
+		description: "Tasks to dispatch, each with its own model. Repeat a task with different models to fan it out.",
+	}),
 	thinking: Type.Optional(ThinkingLevelSchema),
 });
 
 export default function (pi: ExtensionAPI) {
-	let implementing = false;
-	let exploring = 0;
-
-	// One implementation writer or up to MAX_CONCURRENCY read-only explorers.
-	// Shell calls are conservatively blocked in the parent during either role.
-	pi.on("tool_call", (event) => {
-		if ((implementing || exploring > 0) && ["edit", "write", "bash", "powershell"].includes(event.toolName)) {
-			return { block: true, reason: "A delegate is running in this workspace. Wait for its result before editing or running shell commands." };
-		}
-	});
-
-	for (const role of ["implementer", "explorer"] as const) {
-		const isImplementation = role === "implementer";
-		const toolName = isImplementation ? "implement" : "explore";
-		const label = isImplementation ? "Implementation" : "Exploration";
-		let selectedModel: ModelOption | undefined;
-		let preferredModel = "github-copilot/gpt-6-luna";
-		const preferencePath = path.join(getAgentDir(), `${role}.json`);
-
-	const savePreference = (model: string, enabled: boolean) => {
-		fs.mkdirSync(path.dirname(preferencePath), { recursive: true });
-		const temporary = `${preferencePath}.${process.pid}.tmp`;
-		try {
-			fs.writeFileSync(temporary, `${JSON.stringify({ model, enabled }, null, 2)}\n`, { mode: 0o600 });
-			fs.renameSync(temporary, preferencePath);
-		} finally {
-			fs.rmSync(temporary, { force: true });
-		}
-	};
-
-	const disableRole = () => {
-		selectedModel = undefined;
-		pi.setActiveTools(pi.getActiveTools().filter((name) => name !== toolName));
-	};
-
-	pi.on("session_start", (_event, ctx) => {
-		disableRole();
-		preferredModel = "github-copilot/gpt-6-luna";
-		let enabled = false;
-		try {
-			const saved = JSON.parse(fs.readFileSync(preferencePath, "utf8"));
-			if (typeof saved.model !== "string" || !saved.model.trim()) throw new Error("Invalid model preference");
-			if (saved.enabled !== undefined && typeof saved.enabled !== "boolean") throw new Error("Invalid enabled preference");
-			preferredModel = saved.model;
-			enabled = saved.enabled === true;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") ctx.ui.notify(`Could not read ${role} preference; using Luna: ${error}`, "warning");
-		}
-		if (enabled) {
-			const matches = matchModels(preferredModel, availableModels(ctx as any));
-			if (matches.length === 1) {
-				selectedModel = matches[0];
-				pi.setActiveTools([...new Set([...pi.getActiveTools(), toolName])]);
-			} else {
-				ctx.ui.notify(`Saved ${role} model is unavailable: ${preferredModel}. Delegation is off in this session; choose a model with /${role} model.`, "warning");
-			}
-		}
-		ctx.ui.setStatus(role, selectedModel ? `${role}: ${selectedModel.name}` : undefined);
-	});
-
-	pi.registerCommand(role, {
-		description: `${label} delegation: /${role} on|off|status|model [model]`,
-		handler: async (args, ctx) => {
-			let query = args.trim();
-			if (!query || query === "status") {
-				ctx.ui.notify(selectedModel ? `${role}: on (${selectedModel.provider}/${selectedModel.id})` : `${role}: off (direct mode). Selected model: ${preferredModel}`, "info");
-				return;
-			}
-			if (implementing || exploring > 0) {
-				ctx.ui.notify("Wait for running delegates to finish before changing mode.", "warning");
-				return;
-			}
-			if (query === "off") {
-				try {
-					savePreference(preferredModel, false);
-				} catch (error) {
-					ctx.ui.notify(`Could not save ${role} status; mode unchanged: ${error}`, "warning");
-					return;
-				}
-				disableRole();
-				ctx.ui.setStatus(role, undefined);
-				ctx.ui.notify(`${label} delegation off. Main model handles this work directly.`, "info");
-				return;
-			}
-			const options = availableModels(ctx as any);
-			const selectingModel = query === "model" || query.startsWith("model ");
-			if (query === "on") query = preferredModel;
-			else if (selectingModel) {
-				query = query.slice(5).trim();
-				if (!query) {
-					if (!ctx.hasUI) {
-						ctx.ui.notify(`Use /${role} model <provider/model-id> in non-interactive mode.`, "warning");
-						return;
-					}
-					query = await ctx.ui.select(`Choose ${role} model`, options.map((m) => `${m.provider}/${m.id}`)) ?? "";
-					if (!query) return;
-				}
-			}
-			const matches = matchModels(query, options);
-			if (matches.length !== 1) {
-				ctx.ui.notify(`${matches.length ? "Ambiguous model" : "Unavailable model"}: ${query}\n${formatModelList(matches.length ? matches : options)}`, "warning");
-				return;
-			}
-			const selected = matches[0];
-			const canonical = `${selected.provider}/${selected.id}`;
-			try {
-				savePreference(canonical, selectingModel ? Boolean(selectedModel) : true);
-			} catch (error) {
-				ctx.ui.notify(`Could not save ${role} model; selection unchanged: ${error}`, "warning");
-				return;
-			}
-			preferredModel = canonical;
-			if (selectingModel && !selectedModel) {
-				ctx.ui.notify(`Selected ${role}: ${canonical}. Delegation remains off; use /${role} on.`, "info");
-				return;
-			}
-			selectedModel = selected;
-			pi.setActiveTools([...new Set([...pi.getActiveTools(), toolName])]);
-			ctx.ui.setStatus(role, `${role}: ${selectedModel.name}`);
-			ctx.ui.notify(`${isImplementation ? "Implementer" : "Explorer"} on. Model: ${canonical}`, "info");
-		},
-	});
-
-	pi.registerTool({
-		name: toolName,
-		label: isImplementation ? "Implement" : "Explore",
-		description: isImplementation
-			? "Delegate a focused implementation task to the selected implementer. When enabled, use your judgment to delegate suitable coding tasks. Child can edit files and run tests."
-			: "Delegate a focused codebase exploration question to the selected explorer. When enabled, use your judgment without asking permission for each dispatch. Child is read-only; returns relevant paths, symbols, line references, flow, and uncertainties.",
-		promptSnippet: `Delegate ${isImplementation ? "implementation" : "codebase exploration"} to the selected model`,
-		promptGuidelines: [
-			isImplementation
-				? "Use your judgment to delegate suitable implementation tasks through implement when enabled; verify the resulting diff and tests yourself. You may handle trivial tasks directly."
-				: "Use your judgment to delegate focused codebase exploration through explore when enabled; do not ask each time. Read directly for trivial lookups. This is not authorization for unsolicited second opinions or code reviews.",
-			"Provide a self-contained task with scope, constraints, relevant paths, and acceptance criteria. Children do not inherit this conversation.",
-			"Do not mutate the workspace concurrently with delegates. Explorers may run in parallel, but never alongside an implementer. Only one implementer may run at a time.",
-		],
-		parameters: Type.Object({ task: Type.String(), thinking: Type.Optional(ThinkingLevelSchema) }),
-		async execute(_id, params, signal, onUpdate, ctx): Promise<AgentToolResult<SubagentDetails>> {
-			if (!selectedModel) throw new Error(`${label} delegation is off. The user must enable /${role} on first.`);
-			if (implementing) throw new Error("An implementer is already running. Wait for its result.");
-			if (isImplementation && exploring > 0) throw new Error("Explorers are running. Wait for their results before implementing.");
-			if (!isImplementation && exploring >= MAX_CONCURRENCY) throw new Error(`At most ${MAX_CONCURRENCY} explorers may run at once.`);
-			if (!params.task.trim()) throw new Error(`${label} task must not be empty.`);
-			const model = availableModels(ctx as any).find((m) => m.provider === selectedModel!.provider && m.id === selectedModel!.id);
-			if (!model) throw new Error(`Selected ${role} is no longer available. Select another with /${role}.`);
-			if (isImplementation) implementing = true;
-			else exploring++;
-			const result: SubResult = {
-				requestedModel: model.name, resolvedModel: `${model.provider}/${model.id}`, task: params.task,
-				exitCode: -1, messages: [], stderr: "", usage: emptyUsage(),
-			};
-			const details: SubagentDetails = { mode: "single", results: [result] };
-			try {
-				await runOne({ cwd: ctx.cwd, model, task: params.task, thinkingLevel: params.thinking ?? ctx.thinkingLevel,
-					signal, implementation: isImplementation, exploration: !isImplementation,
-					onUpdate: () => onUpdate?.({ content: [{ type: "text", text: `${label} with ${result.resolvedModel}…` }], details }),
-				}, result);
-				return {
-					content: [{ type: "text", text: `${result.resolvedModel} — ${isFailedResult(result) ? "failed" : "completed"}\n\n${truncateOutput(getResultOutput(result))}` }],
-					details, usage: toUsage(result.usage), isError: isFailedResult(result),
-				};
-			} finally {
-				if (isImplementation) implementing = false;
-				else exploring--;
-			}
-		},
-	});
-
-	pi.on("before_agent_start", (event) => {
-		const enabled = selectedModel && event.systemPromptOptions.selectedTools?.includes(toolName);
-		return { systemPrompt: `${event.systemPrompt}\n\n## ${label} delegation\n${enabled
-			? `The user enabled ${role} delegation to ${selectedModel!.provider}/${selectedModel!.id}. You are the coordinator. Use your judgment to call ${toolName} for suitable ${isImplementation ? "coding tasks" : "codebase exploration questions"}, without asking per dispatch. Supply focused context and verify its findings afterward; trivial work may be done directly. This does not authorize unsolicited review subagents. Do not mutate the workspace concurrently with delegates. Explorers and implementers must not run simultaneously.`
-			: `${label} delegation is off. Handle ${isImplementation ? "implementation" : "codebase exploration"} directly; do not launch ${role} agents, even if earlier conversation enabled them. Other delegation roles have independent settings.`}` };
-	});
-	}
-
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
 		description: [
 			"Dispatch read-only subagents pinned to explicit models, each in an isolated context window.",
 			"Only use this when the user asks for it: to consult a specific model, get a second opinion from a different model family, or fan one task out across several models.",
-			"Modes (provide exactly one): single {model, task}; fanout {models, task}; parallel {tasks: [{model, task}]}.",
+			"Provide tasks: [{ model, task }]. One task is a single consultation; several run concurrently. Repeat the same task with different models to fan it out.",
 			"Subagents are read-only: they can read, search, and run read-only bash, but cannot modify the repo.",
 		].join(" "),
 		promptSnippet: "Dispatch a read-only subagent to a specific model for review, planning, or ideation",
@@ -671,35 +436,18 @@ export default function (pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<SubagentDetails>> {
 			const options = availableModels(ctx as any);
 			const thinkingLevel = params.thinking ?? ctx.thinkingLevel;
-
-			const hasSingle = Boolean(params.model && params.task);
-			const hasFanout = Boolean(params.models && params.models.length > 0 && params.task);
-			const hasTasks = Boolean(params.tasks && params.tasks.length > 0);
-			const modeCount = Number(hasSingle) + Number(hasFanout) + Number(hasTasks);
-
-			const mode: Mode = hasTasks ? "parallel" : hasFanout ? "fanout" : "single";
-			const makeDetails = (results: SubResult[]): SubagentDetails => ({ mode, results });
-
-			if (modeCount !== 1) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Invalid parameters. Provide exactly one mode: single {model, task}, fanout {models, task}, or parallel {tasks}.\n\nAvailable models:\n" +
-								formatModelList(options),
-						},
-					],
-					details: makeDetails([]),
-				};
-			}
+			const makeDetails = (results: SubResult[]): SubagentDetails => ({ results });
 
 			// Resolve every requested reference up front so we fail before
 			// spending tokens on a partially-valid batch.
-			const requested: { reference: string; task: string }[] = hasTasks
-				? params.tasks!.map((t) => ({ reference: t.model, task: t.task }))
-				: hasFanout
-					? params.models!.map((m) => ({ reference: m, task: params.task! }))
-					: [{ reference: params.model!, task: params.task! }];
+			const requested = (params.tasks ?? []).map((t) => ({ reference: t.model, task: t.task }));
+
+			if (requested.length === 0) {
+				return {
+					content: [{ type: "text", text: `Provide at least one task.\n\nAvailable models:\n${formatModelList(options)}` }],
+					details: makeDetails([]),
+				};
+			}
 
 			if (requested.length > MAX_PARALLEL_TASKS) {
 				return {
@@ -815,35 +563,17 @@ export default function (pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, _context) {
-			const scope = theme.fg("muted", " [read-only]");
-			if (args.tasks && args.tasks.length > 0) {
-				let text =
-					theme.fg("toolTitle", theme.bold("subagent ")) +
-					theme.fg("accent", `parallel (${args.tasks.length} tasks)`) +
-					scope;
-				for (const t of args.tasks.slice(0, 4)) {
-					const preview = t.task.length > 40 ? `${t.task.slice(0, 40)}...` : t.task;
-					text += `\n  ${theme.fg("accent", t.model)}${theme.fg("dim", ` ${preview}`)}`;
-				}
-				if (args.tasks.length > 4) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 4} more`)}`;
-				return new Text(text, 0, 0);
-			}
-			if (args.models && args.models.length > 0) {
-				const preview = args.task && args.task.length > 50 ? `${args.task.slice(0, 50)}...` : (args.task ?? "");
-				let text =
-					theme.fg("toolTitle", theme.bold("subagent ")) +
-					theme.fg("accent", `fanout (${args.models.length} models)`) +
-					scope;
-				text += `\n  ${theme.fg("muted", args.models.join(", "))}`;
-				if (preview) text += `\n  ${theme.fg("dim", preview)}`;
-				return new Text(text, 0, 0);
-			}
-			const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
-			const text =
+			const tasks = args.tasks ?? [];
+			const count = tasks.length;
+			let text =
 				theme.fg("toolTitle", theme.bold("subagent ")) +
-				theme.fg("accent", args.model ?? "...") +
-				scope +
-				`\n  ${theme.fg("dim", preview)}`;
+				theme.fg("accent", count === 1 ? "1 task" : `${count} tasks`) +
+				theme.fg("muted", " [read-only]");
+			for (const task of tasks.slice(0, 4)) {
+				const preview = task.task.length > 40 ? `${task.task.slice(0, 40)}...` : task.task;
+				text += `\n  ${theme.fg("accent", task.model)}${theme.fg("dim", ` ${preview}`)}`;
+			}
+			if (count > 4) text += `\n  ${theme.fg("muted", `... +${count - 4} more`)}`;
 			return new Text(text, 0, 0);
 		},
 
@@ -857,7 +587,7 @@ export default function (pi: ExtensionAPI) {
 			const mdTheme = getMarkdownTheme();
 			const usageStr = formatUsageStats(aggregateUsage(details.results));
 
-			if (details.results.length === 1 || details.mode === "single") {
+			if (details.results.length === 1) {
 				const r = details.results[0];
 				const failed = isFailedResult(r);
 				const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "✓");

@@ -9,38 +9,22 @@
  * Supports multiple terminal protocols:
  * - OSC 777: Ghostty, iTerm2, WezTerm, rxvt-unicode
  * - OSC 99: Kitty
- * - Windows toast: Windows Terminal (WSL)
  */
 
-import { execFile } from "node:child_process";
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
  * OSC 777 fields are `;`-separated and BEL-terminated, so a semicolon in a
  * session name would inject extra fields and a control byte could truncate the
- * sequence. PowerShell toast payloads are interpolated into single-quoted
- * strings, which single quotes would escape from.
+ * sequence.
  */
 function sanitize(text: string): string {
 	return text
 		.replace(/[\u0000-\u001f\u007f]/g, " ")
-		.replace(/[;']/g, ",")
+		.replace(/;/g, ",")
 		.replace(/\s+/g, " ")
 		.trim();
-}
-
-function windowsToastScript(title: string, body: string): string {
-	const type = "Windows.UI.Notifications";
-	const mgr = `[${type}.ToastNotificationManager, ${type}, ContentType = WindowsRuntime]`;
-	const template = `[${type}.ToastTemplateType]::ToastText01`;
-	const toast = `[${type}.ToastNotification]::new($xml)`;
-	return [
-		`${mgr} > $null`,
-		`$xml = [${type}.ToastNotificationManager]::GetTemplateContent(${template})`,
-		`$xml.GetElementsByTagName('text')[0].AppendChild($xml.CreateTextNode('${body}')) > $null`,
-		`[${type}.ToastNotificationManager]::CreateToastNotifier('${title}').Show(${toast})`,
-	].join("; ");
 }
 
 function notifyOSC777(title: string, body: string): void {
@@ -53,16 +37,10 @@ function notifyOSC99(title: string, body: string): void {
 	process.stdout.write(`\x1b]99;i=1:p=body;${body}\x1b\\`);
 }
 
-function notifyWindows(title: string, body: string): void {
-	execFile("powershell.exe", ["-NoProfile", "-Command", windowsToastScript(title, body)]);
-}
-
 function notify(title: string, body: string): void {
 	const safeTitle = sanitize(title);
 	const safeBody = sanitize(body);
-	if (process.env.WT_SESSION) {
-		notifyWindows(safeTitle, safeBody);
-	} else if (process.env.KITTY_WINDOW_ID) {
+	if (process.env.KITTY_WINDOW_ID) {
 		notifyOSC99(safeTitle, safeBody);
 	} else {
 		notifyOSC777(safeTitle, safeBody);
