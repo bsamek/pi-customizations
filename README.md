@@ -14,9 +14,15 @@ backed up, and installed on any machine.
 | `extensions/session-transcript.ts` | Exports the active session as a compact Markdown transcript for pasting elsewhere: one section per turn, with the prompt and the assistant's prose, and none of the tool calls, results, thinking, or usage that `/export` carries. `/transcript` writes `pi-transcript-<session-id>.md`, `/transcript <path>` writes elsewhere, and `/transcript --editor` opens it in the editor. Only the active branch is exported, and no model call is made. |
 | `extensions/subagent/` | Adds read-only model consultations with `subagent`. Each call supplies `tasks: [{ model, task }]`; one task is a single consultation, several run concurrently, and repeating a task across models fans it out. Uses isolated child processes, not a sandbox. |
 
-`session-summary` writes its summaries with `github-copilot/gpt-6-luna`. When
-that model is unavailable or unauthenticated, it warns once and then stops
-trying.
+`session-summary` writes its summaries with `gpt-6-luna` via `github-copilot`
+or `openai-codex`. It prefers the active session's provider when authenticated,
+then falls back to the other (Copilot first if neither is the active provider).
+If neither model is available with configured auth, it warns once per session;
+later summary attempts check availability again.
+
+Inside Herdr, interactive sessions also mirror the terminal title to the current
+Herdr tab using `herdr tab rename`. This includes generated and manual titles;
+CLI failures are ignored. RPC and non-interactive sessions do not rename tabs.
 
 ## Install
 

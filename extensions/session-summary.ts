@@ -3,7 +3,8 @@
  *
  * Keeps the terminal title in sync with an AI-generated one-line summary of the
  * current session, and shows a one-line recap when you return to the terminal.
- * Both come from a single model call per settled run.
+ * Both come from a single model call per settled run. Inside Herdr, the tab
+ * label mirrors the terminal title (interactive TUI only).
  *
  * Behavior:
  * - On session start: base title (`π - name - cwd`), then summarize immediately
@@ -24,8 +25,9 @@
  *   /session-title <text>   set the title manually
  *   pi --no-session-recap   start with automatic recaps disabled
  *
- * The summary uses `github-copilot/gpt-6-luna` with cheap one-off request
- * options. Failures are silent and keep the previous title.
+ * The summary uses `gpt-6-luna` via GitHub Copilot or OpenAI Codex, preferring
+ * the active provider when authenticated, with cheap one-off request options.
+ * Failures are silent and keep the previous title.
  *
  * Limitation: Claude Code also requires the terminal to be unfocused, but pi
  * does not expose terminal focus/blur to extensions (pi-tui consumes the
@@ -41,7 +43,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
-const MODEL_PROVIDER = "github-copilot";
+const MODEL_PROVIDERS = ["github-copilot", "openai-codex"];
 const MODEL_ID = "gpt-6-luna";
 
 /** Idle time after a settled run before an automatic recap is shown. */
@@ -232,8 +234,21 @@ export default function (pi: ExtensionAPI) {
 		return name ? `π - ${name} - ${cwd}` : `π - ${cwd}`;
 	};
 
-	const applyTitle = (ctx: ExtensionContext) => {
-		ctx.ui.setTitle(summaryTitle ? `π - ${summaryTitle}` : baseTitle(ctx));
+	// Serialize renames so a slower earlier update cannot overwrite a newer title.
+	let herdrRename = Promise.resolve();
+	const applyTitle = (ctx: ExtensionContext, title = summaryTitle ? `π - ${summaryTitle}` : baseTitle(ctx)) => {
+		ctx.ui.setTitle(title);
+		const tabId = process.env.HERDR_TAB_ID;
+		if (ctx.mode !== "tui" || !tabId) return;
+		if (process.env.TERM_PROGRAM !== "herdr" && process.env.HERDR_ENV !== "1") return;
+		const binary = process.env.HERDR_BIN_PATH || "herdr";
+		herdrRename = herdrRename
+			.then(async () => {
+				await pi.exec(binary, ["tab", "rename", tabId, title], { timeout: 2000 });
+			})
+			.catch(() => {
+				// Tab naming is best-effort; a missing CLI/server must not interrupt Pi.
+			});
 	};
 
 	const cancelRecapTimer = () => {
@@ -279,13 +294,19 @@ export default function (pi: ExtensionAPI) {
 		if (!isInteractive(ctx)) return { ok: false, reason: "empty" };
 		if (inFlight) return { ok: false, reason: "in-flight" };
 
-		const model = ctx.modelRegistry.find(MODEL_PROVIDER, MODEL_ID);
-		if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
+		// Prefer the session's provider, then try the other supported provider.
+		const providers = [...MODEL_PROVIDERS].sort(
+			(a, b) => Number(b === ctx.model?.provider) - Number(a === ctx.model?.provider),
+		);
+		const model = providers
+			.map((provider) => ctx.modelRegistry.find(provider, MODEL_ID))
+			.find((candidate) => candidate && ctx.modelRegistry.hasConfiguredAuth(candidate));
+		if (!model) {
 			if (!warnedModelProblem) {
 				warnedModelProblem = true;
 				if (ctx.hasUI) {
 					ctx.ui.notify(
-						`session-summary: ${MODEL_PROVIDER}/${MODEL_ID} not found or has no auth; summaries disabled`,
+						`session-summary: no authenticated ${MODEL_ID} found via ${MODEL_PROVIDERS.join(" or ")}; summaries disabled`,
 						"warning",
 					);
 				}
@@ -387,7 +408,8 @@ export default function (pi: ExtensionAPI) {
 		generation++;
 		cancelRecapTimer();
 		clearRecap(ctx);
-		ctx.ui.setTitle(baseTitle(ctx));
+		applyTitle(ctx, baseTitle(ctx));
+		await herdrRename;
 	});
 
 	pi.registerCommand("recap", {
