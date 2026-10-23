@@ -82,8 +82,8 @@ npm ci
 npm test
 ```
 
-GitHub Actions runs the same suite on Node 22 and 24 for pushes to `main` and
-pull requests. Subagent tests spawn the test file as a fake child CLI and assert
+GitHub Actions runs the same suite on Node 24 for pushes to `main` and pull
+requests. Subagent tests spawn the test file as a fake child CLI and assert
 its loadout without spending model tokens. The suite uses the Pi package from
 `devDependencies`; set `PI_TEST_PACKAGE` to another package's `package.json`
 path to test against a different local install.
