@@ -196,6 +196,10 @@ test("Herdr renames are serialized and recover silently from CLI failures", asyn
 });
 
 for (const scenario of [
+  { name: "OpenAI only", available: ["openai"], active: "openai", expected: "openai" },
+  { name: "all authenticated: prefer active OpenAI", active: "openai", expected: "openai" },
+  { name: "Codex unavailable: fall back to OpenAI", available: ["openai"], active: "openai-codex", expected: "openai" },
+  { name: "OpenAI unauthenticated: fall back to Codex", available: ["openai", "openai-codex"], active: "openai", unauthenticated: "openai", expected: "openai-codex" },
   { name: "work: Copilot only", available: ["github-copilot"], active: "github-copilot", expected: "github-copilot" },
   { name: "home: Codex only", available: ["openai-codex"], active: "openai-codex", expected: "openai-codex" },
   { name: "both authenticated: prefer active Codex", active: "openai-codex", expected: "openai-codex" },
@@ -215,7 +219,7 @@ for (const scenario of [
     });
     s.ctx.model = { provider: scenario.active };
     s.ctx.modelRegistry.find = (provider, id) =>
-      (scenario.available ?? ["github-copilot", "openai-codex"]).includes(provider)
+      (scenario.available ?? ["github-copilot", "openai-codex", "openai"]).includes(provider)
         ? { provider, id }
         : undefined;
     s.ctx.modelRegistry.hasConfiguredAuth = (model) => model.provider !== scenario.unauthenticated;
@@ -228,7 +232,7 @@ for (const scenario of [
 }
 
 for (const missing of [true, false]) {
-  test(`neither provider ${missing ? "available" : "authenticated"}: warn once and recheck later`, async () => {
+  test(`no provider ${missing ? "available" : "authenticated"}: warn once and recheck later`, async () => {
     let calls = 0;
     const s = setup({
       branch: [message("user", "Fix OAuth")],
@@ -245,7 +249,7 @@ for (const missing of [true, false]) {
     await flush();
     assert.equal(calls, 0);
     assert.equal(s.notices.length, 1);
-    assert.match(s.notices[0], /github-copilot or openai-codex/);
+    assert.match(s.notices[0], /github-copilot or openai-codex or openai/);
 
     s.ctx.modelRegistry.find = (provider, id) => provider === "openai-codex" ? { provider, id } : undefined;
     s.ctx.modelRegistry.hasConfiguredAuth = () => true;

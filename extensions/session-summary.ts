@@ -25,7 +25,7 @@
  *   /session-title <text>   set the title manually
  *   pi --no-session-recap   start with automatic recaps disabled
  *
- * The summary uses `gpt-6-luna` via GitHub Copilot or OpenAI Codex, preferring
+ * The summary uses `gpt-6-luna` via GitHub Copilot, OpenAI Codex, or OpenAI, preferring
  * the active provider when authenticated, with cheap one-off request options.
  * Failures are silent and keep the previous title.
  *
@@ -43,7 +43,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 
-const MODEL_PROVIDERS = ["github-copilot", "openai-codex"];
+const MODEL_PROVIDERS = ["github-copilot", "openai-codex", "openai"];
 const MODEL_ID = "gpt-6-luna";
 
 /** Idle time after a settled run before an automatic recap is shown. */
@@ -294,7 +294,7 @@ export default function (pi: ExtensionAPI) {
 		if (!isInteractive(ctx)) return { ok: false, reason: "empty" };
 		if (inFlight) return { ok: false, reason: "in-flight" };
 
-		// Prefer the session's provider, then try the other supported provider.
+		// Prefer the session's provider, then try the other supported providers.
 		const providers = [...MODEL_PROVIDERS].sort(
 			(a, b) => Number(b === ctx.model?.provider) - Number(a === ctx.model?.provider),
 		);

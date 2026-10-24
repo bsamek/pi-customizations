@@ -15,9 +15,10 @@ backed up, and installed on any machine.
 | `extensions/subagent/` | Adds read-only model consultations with `subagent`. Each call supplies `tasks: [{ model, task }]`; one task is a single consultation, several run concurrently, and repeating a task across models fans it out. Uses isolated child processes, not a sandbox. |
 
 `session-summary` writes its summaries with `gpt-6-luna` via `github-copilot`
-or `openai-codex`. It prefers the active session's provider when authenticated,
-then falls back to the other (Copilot first if neither is the active provider).
-If neither model is available with configured auth, it warns once per session;
+or either OpenAI provider (`openai-codex` and `openai`). It prefers the active
+session's provider when authenticated, then tries the remaining providers in
+order: `github-copilot`, `openai-codex`, `openai`.
+If no model is available with configured auth, it warns once per session;
 later summary attempts check availability again.
 
 Inside Herdr, interactive sessions also mirror the terminal title to the current
@@ -90,15 +91,18 @@ npm test
 
 GitHub Actions runs the same suite on Node 24 for pushes to `main` and pull
 requests. Subagent tests spawn the test file as a fake child CLI and assert
-its loadout without spending model tokens. The suite uses the Pi package from
-`devDependencies`; set `PI_TEST_PACKAGE` to another package's `package.json`
+its loadout without spending model tokens. The suite prefers the local Pi package from
+`devDependencies` (`npm ci`), falling back to an installed Pi package; set `PI_TEST_PACKAGE` to another package's `package.json`
 path to test against a different local install.
 
 ## Development
 
-Pi installs this repo as a **git package**, so it runs from its own clone at
+When installed using the git URL, pi runs this repo from its own clone at
 `~/.pi/agent/git/github.com/bsamek/pi-customizations` — not from your working
-copy. Edits to `~/src/pi-customizations` have no effect until they are pushed.
+copy. In that setup, working-copy edits have no effect until pushed and updated.
+If your settings instead list extension paths under `~/src/pi-customizations`,
+pi loads the working copy directly: no push or `pi update` is needed, but reload
+extensions or restart pi after editing.
 
 ```bash
 # edit, then

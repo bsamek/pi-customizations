@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url";
 function findPiPackage() {
   if (process.env.PI_TEST_PACKAGE) return process.env.PI_TEST_PACKAGE;
 
-  const candidates = [path.join("/opt/homebrew/lib/node_modules", "@earendil-works", "pi-coding-agent", "package.json")];
+  const candidates = [
+    fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/package.json", import.meta.url)),
+    path.join("/opt/homebrew/lib/node_modules", "@earendil-works", "pi-coding-agent", "package.json"),
+  ];
   const releases = path.join(os.homedir(), ".pi", "agent", "install", "releases");
   try {
     for (const name of fs.readdirSync(releases).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) {
