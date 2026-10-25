@@ -145,55 +145,25 @@ function herdrEnv(t, overrides = {}) {
   }
 }
 
-test("Herdr mirrors generated, manual, and shutdown titles using argument-safe CLI calls", async (t) => {
-  herdrEnv(t);
-  const s = setup({ branch: [message("user", "Fix OAuth")], complete: summaryReply() });
-  await s.events.get("session_start")[0]({}, s.ctx);
-  await flush();
-  assert.equal(s.executions.at(-1)[1].at(-1), "π - Fix OAuth");
-  await s.commands.get("session-title").handler("Fix $(echo unsafe)", s.ctx);
-  await flush();
-  assert.deepEqual(s.executions.at(-1), [
-    "/fake/herdr", ["tab", "rename", "w4:t1", "π - Fix $(echo unsafe)"], { timeout: 2000 },
-  ]);
-  await s.events.get("session_shutdown")[0]({}, s.ctx);
-  assert.equal(s.executions.at(-1)[1].at(-1), s.titles.at(-1));
-});
-
-for (const scenario of [
-  { name: "outside Herdr", env: { TERM_PROGRAM: "ghostty", HERDR_ENV: undefined } },
-  { name: "missing tab ID", env: { HERDR_TAB_ID: undefined } },
-  { name: "RPC", mode: "rpc" },
-  { name: "print", mode: "print" },
-]) {
-  test(`does not rename tabs: ${scenario.name}`, async (t) => {
-    herdrEnv(t, scenario.env);
-    const s = setup({ mode: scenario.mode });
-    await s.commands.get("session-title").handler("Manual title", s.ctx);
+for (const terminal of ["herdr", "ghostty"]) {
+  test(`${terminal}: terminal titles still update without renaming Herdr tabs`, async (t) => {
+    herdrEnv(t, { TERM_PROGRAM: terminal, HERDR_ENV: terminal === "herdr" ? "1" : undefined });
+    const s = setup({ branch: [message("user", "Fix OAuth")], complete: summaryReply() });
+    await s.events.get("session_start")[0]({}, s.ctx);
     await flush();
+    assert.equal(s.titles.at(-1), "π - Fix OAuth");
+
+    await s.commands.get("session-title").handler("Manual title", s.ctx);
+    assert.equal(s.titles.at(-1), "π - Manual title");
+
+    await s.events.get("session_info_changed")[0]({}, s.ctx);
+    assert.equal(s.titles.at(-1), "π - Manual title");
+
+    await s.events.get("session_shutdown")[0]({}, s.ctx);
+    assert.equal(s.titles.at(-1), `π - ${s.ctx.cwd.split("/").at(-1)}`);
     assert.deepEqual(s.executions, []);
   });
 }
-
-test("Herdr renames are serialized and recover silently from CLI failures", async (t) => {
-  herdrEnv(t, { HERDR_BIN_PATH: undefined });
-  const s = setup();
-  let rejectFirst;
-  const calls = [];
-  s.pi.exec = async (binary, args) => {
-    calls.push([binary, args.at(-1)]);
-    if (calls.length === 1) await new Promise((_resolve, reject) => { rejectFirst = reject; });
-    return { code: 0 };
-  };
-  await s.commands.get("session-title").handler("First", s.ctx);
-  await s.commands.get("session-title").handler("Second", s.ctx);
-  await flush();
-  assert.deepEqual(calls, [["herdr", "π - First"]]);
-  rejectFirst(new Error("CLI unavailable"));
-  await flush();
-  assert.deepEqual(calls, [["herdr", "π - First"], ["herdr", "π - Second"]]);
-  assert.equal(s.notices.some((notice) => notice.includes("unavailable")), false);
-});
 
 for (const scenario of [
   { name: "OpenAI only", available: ["openai"], active: "openai", expected: "openai" },

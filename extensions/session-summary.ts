@@ -3,8 +3,7 @@
  *
  * Keeps the terminal title in sync with an AI-generated one-line summary of the
  * current session, and shows a one-line recap when you return to the terminal.
- * Both come from a single model call per settled run. Inside Herdr, the tab
- * label mirrors the terminal title (interactive TUI only).
+ * Both come from a single model call per settled run.
  *
  * Behavior:
  * - On session start: base title (`π - name - cwd`), then summarize immediately
@@ -234,21 +233,8 @@ export default function (pi: ExtensionAPI) {
 		return name ? `π - ${name} - ${cwd}` : `π - ${cwd}`;
 	};
 
-	// Serialize renames so a slower earlier update cannot overwrite a newer title.
-	let herdrRename = Promise.resolve();
 	const applyTitle = (ctx: ExtensionContext, title = summaryTitle ? `π - ${summaryTitle}` : baseTitle(ctx)) => {
 		ctx.ui.setTitle(title);
-		const tabId = process.env.HERDR_TAB_ID;
-		if (ctx.mode !== "tui" || !tabId) return;
-		if (process.env.TERM_PROGRAM !== "herdr" && process.env.HERDR_ENV !== "1") return;
-		const binary = process.env.HERDR_BIN_PATH || "herdr";
-		herdrRename = herdrRename
-			.then(async () => {
-				await pi.exec(binary, ["tab", "rename", tabId, title], { timeout: 2000 });
-			})
-			.catch(() => {
-				// Tab naming is best-effort; a missing CLI/server must not interrupt Pi.
-			});
 	};
 
 	const cancelRecapTimer = () => {
@@ -409,7 +395,6 @@ export default function (pi: ExtensionAPI) {
 		cancelRecapTimer();
 		clearRecap(ctx);
 		applyTitle(ctx, baseTitle(ctx));
-		await herdrRename;
 	});
 
 	pi.registerCommand("recap", {

@@ -21,10 +21,6 @@ order: `github-copilot`, `openai-codex`, `openai`.
 If no model is available with configured auth, it warns once per session;
 later summary attempts check availability again.
 
-Inside Herdr, interactive sessions also mirror the terminal title to the current
-Herdr tab using `herdr tab rename`. This includes generated and manual titles;
-CLI failures are ignored. RPC and non-interactive sessions do not rename tabs.
-
 ## Install
 
 ```bash
