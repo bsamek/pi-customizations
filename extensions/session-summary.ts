@@ -46,7 +46,7 @@ const MODEL_PROVIDERS = ["github-copilot", "openai-codex", "openai"];
 const MODEL_ID = "gpt-6-luna";
 
 /** Idle time after a settled run before an automatic recap is shown. */
-const IDLE_TRIGGER_MS = 3 * 60 * 1000;
+const IDLE_TRIGGER_MS = 60 * 1000;
 /** Automatic recaps need at least this many user turns. */
 const MIN_USER_TURNS = 1;
 const MAX_TITLE_CHARS = 60;

@@ -42,7 +42,7 @@ test("session start applies the generated title", async () => {
   assert.equal(s.titles.at(-1), "π - Fix OAuth");
 });
 
-test("one completed user turn updates the title and schedules a recap after three idle minutes", async (t) => {
+test("one completed user turn updates the title and schedules a recap after one idle minute", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const s = setup({
     branch: [message("user", "Fix OAuth"), message("assistant", "Done")],
@@ -55,7 +55,9 @@ test("one completed user turn updates the title and schedules a recap after thre
   assert.equal(s.titles.at(-1), "π - Fix OAuth");
   assert.equal(s.widgets.filter(Boolean).length, 0);
 
-  t.mock.timers.tick(3 * 60 * 1000);
+  t.mock.timers.tick(60 * 1000 - 1);
+  assert.equal(s.widgets.filter(Boolean).length, 0);
+  t.mock.timers.tick(1);
   assert.deepEqual(s.widgets.filter(Boolean).at(-1), ["recap: Fixed token refresh."]);
 });
 
@@ -72,7 +74,7 @@ test("no user turns means no summary call and no recap", async (t) => {
 
   await s.events.get("agent_settled")[0]({}, s.ctx);
   await flush();
-  t.mock.timers.tick(3 * 60 * 1000);
+  t.mock.timers.tick(60 * 1000);
   assert.equal(calls, 0);
   assert.equal(s.widgets.filter(Boolean).length, 0);
 });
@@ -88,7 +90,7 @@ test("automatic recaps can be disabled without disabling title updates", async (
   await s.events.get("agent_settled")[0]({}, s.ctx);
   await flush();
   assert.equal(s.titles.at(-1), "π - Fix OAuth");
-  t.mock.timers.tick(3 * 60 * 1000);
+  t.mock.timers.tick(60 * 1000);
   assert.equal(s.widgets.filter(Boolean).length, 0);
 });
 
@@ -103,7 +105,7 @@ test("submitting another prompt cancels a pending automatic recap", async (t) =>
   await s.events.get("agent_settled")[0]({}, s.ctx);
   await flush();
   await s.events.get("input")[0]({ source: "user" }, s.ctx);
-  t.mock.timers.tick(3 * 60 * 1000);
+  t.mock.timers.tick(60 * 1000);
   assert.notDeepEqual(s.widgets.filter(Boolean).at(-1), ["recap: Fixed token refresh."]);
 });
 
